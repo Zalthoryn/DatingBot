@@ -1,0 +1,116 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: dating_user
+      POSTGRES_PASSWORD: dating_password
+      POSTGRES_DB: dating_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - dating_network
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - dating_network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ivan
+      RABBITMQ_DEFAULT_PASS: admin1234
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - dating_network
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ivan
+      MINIO_ROOT_PASSWORD: admin1234
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - dating_network
+
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - BOT_TOKEN=7609430693:AAEMIBk_Nfnw-0KgHnFzUSMrUrq_TjKEqlI
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    networks:
+      - dating_network
+
+  matchmaking-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.matchmaking
+    depends_on:
+      - postgres
+      - rabbitmq
+      - redis
+    networks:
+      - dating_network
+
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.celery
+    command: celery -A tasks worker --loglevel=info
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - dating_network
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.celery
+    command: celery -A tasks beat --loglevel=info
+    depends_on:
+      - redis
+      - celery-worker
+    networks:
+      - dating_network
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.notification
+    environment:
+      - BOT_TOKEN=7609430693:AAEMIBk_Nfnw-0KgHnFzUSMrUrq_TjKEqlI
+    depends_on:
+      - rabbitmq
+    networks:
+      - dating_network
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  minio_data:
+
+networks:
+  dating_network:
+    driver: bridge
