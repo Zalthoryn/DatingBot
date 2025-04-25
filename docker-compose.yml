@@ -59,24 +59,36 @@ services:
       - "9000:9000"
       - "9001:9001"
     environment:
-      MINIO_ROOT_USER: ivan
-      MINIO_ROOT_PASSWORD: admin1234
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-ivan}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-admin1234}
     volumes:
       - minio_data:/data
     command: server /data --console-address ":9001"
     networks:
       - dating_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 2s
+      timeout: 2s
+      retries: 3
 
   telegram-bot:
     build:
       context: .
       dockerfile: Dockerfile
     environment:
-      - BOT_TOKEN=7609430693:AAEMIBk_Nfnw-0KgHnFzUSMrUrq_TjKEqlI
+      - BOT_TOKEN=${BOT_TOKEN}
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-ivan}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-admin1234}
     depends_on:
-      - postgres
-      - redis
-      - rabbitmq
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     networks:
       - dating_network
  
@@ -100,9 +112,13 @@ services:
       context: .
       dockerfile: Dockerfile.notification
     environment:
-      - BOT_TOKEN=7609430693:AAEMIBk_Nfnw-0KgHnFzUSMrUrq_TjKEqlI
+      - BOT_TOKEN=${BOT_TOKEN}
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-ivan}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-admin1234}
     depends_on:
       rabbitmq:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     networks:
       - dating_network

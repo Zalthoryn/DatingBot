@@ -24,39 +24,62 @@ async def init_db():
         host="postgres"
     )
 
-async def calculate_ratings(pool, user_id):
+@app.task
+async def calculate_ratings(user_id):
+    pool = await init_db()
     async with pool.acquire() as conn:
-        user = await conn.fetchrow("SELECT * FROM users WHERE telegram_id = $1", user_id)
+        user = await conn.fetchrow("SELECT * FROM Users WHERE telegram_id = $1", user_id)
         if not user:
+            logger.warning(f"User with telegram_id {user_id} not found")
             return
 
-        primary = 0
-        if user["age"]: primary += 1
-        if user["gender"]: primary += 1
-        if user["interests"]: primary += 1
-        if user["city"]: primary += 1
-        if user["photo_count"] > 0: primary += user["photo_count"]
+        profile = await conn.fetchrow("SELECT * FROM Profiles WHERE user_id = $1", user['id'])
+        if not profile:
+            logger.warning(f"Profile for user {user_id} not found")
+            return
 
-        behavior = user["match_count"] * 2
+        photo_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM Photos WHERE user_id = $1", user['id']
+        )
+
+        match_count = await conn.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM Matches
+            WHERE profile1_id = $1 OR profile2_id = $1
+            """,
+            profile['id']
+        )
+
+        primary = 0
+        if profile["age"]: primary += 1
+        if profile["gender"]: primary += 1
+        if profile["interests"]: primary += 1
+        if profile["city"]: primary += 1
+        primary += min(1, photo_count)
+
+        behavior = match_count * 2
         combined = primary + behavior
 
         await conn.execute(
             """
-            UPDATE users
-            SET primary_rating = $2, behavior_rating = $3, combined_rating = $4
-            WHERE telegram_id = $1
+            UPDATE Ratings
+            SET primary_rating = $1, behavioral_rating = $2, combined_rating = $3, updated_at = NOW()
+            WHERE profile_id = $4
             """,
-            user_id, primary, behavior, combined
+            primary, behavior, combined, profile['id']
         )
+        logger.info(f"Ratings updated for user {user_id}: primary={primary}, behavior={behavior}, combined={combined}")
+    await pool.close()
 
 @app.task
 def recalculate_ratings():
     loop = asyncio.get_event_loop()
     pool = loop.run_until_complete(init_db())
     async def run():
-        users = await pool.fetch("SELECT telegram_id FROM users")
+        users = await pool.fetch("SELECT telegram_id FROM Users")
         for user in users:
-            await calculate_ratings(pool, user["telegram_id"])
+            await calculate_ratings(user["telegram_id"])
         await pool.close()
     loop.run_until_complete(run())
     logger.info("Ratings recalculated")
