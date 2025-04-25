@@ -1,0 +1,29 @@
+# Исключение для Visual Studio
+.vs/
+.vscode/
+*.suo
+*.user
+*.sln.docstates
+
+# Исключение временных файлов Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Исключение логов
+*.log
+
+# Исключение директорий с данными Docker
+postgres_data/
+rabbitmq_data/
+redis_data/
+
+# Исключение других временных файлов
+*.swp
+*.bak
+*.tmp
+
+# Исключение виртуального окружения
+venv/
+env/
