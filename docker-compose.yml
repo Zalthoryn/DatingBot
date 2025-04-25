@@ -11,6 +11,11 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - dating_network
+    healthcheck: # Ожидаем готовности Postgres принимать сообщения
+      test: ["CMD", "pg_isready", "-U", "dating_user", "-d", "dating_db"]
+      interval: 2s
+      timeout: 2s
+      retries: 3
 
   redis:
     image: redis:7
@@ -20,7 +25,13 @@ services:
       - redis_data:/data
     networks:
       - dating_network
+    healthcheck: # Ожидаем готовности Redis принимать сообщения
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 3
 
+  # Брокер - RabbitMQ
   rabbitmq:
     image: rabbitmq:3-management
     ports:
@@ -33,7 +44,13 @@ services:
       - rabbitmq_data:/var/lib/rabbitmq
     networks:
       - dating_network
+    healthcheck: # Ожидаем готовности Rabbit принимать сообщения
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 3s
+      timeout: 2s
+      retries: 3
 
+  # Работаем с изображениями
   minio:
     image: minio/minio:latest
     ports:
@@ -60,18 +77,35 @@ services:
       - rabbitmq
     networks:
       - dating_network
-
+ 
+  # Matchmaking и Notification
   matchmaking-service:
     build:
       context: .
       dockerfile: Dockerfile.matchmaking
     depends_on:
-      - postgres
-      - rabbitmq
-      - redis
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - dating_network
 
+  notification-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.notification
+    environment:
+      - BOT_TOKEN=7609430693:AAEMIBk_Nfnw-0KgHnFzUSMrUrq_TjKEqlI
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - dating_network
+
+  # Сервисы для работы с CELERY
   celery-worker:
     build:
       context: .
@@ -91,17 +125,6 @@ services:
     depends_on:
       - redis
       - celery-worker
-    networks:
-      - dating_network
-
-  notification-service:
-    build:
-      context: .
-      dockerfile: Dockerfile.notification
-    environment:
-      - BOT_TOKEN=7609430693:AAEMIBk_Nfnw-0KgHnFzUSMrUrq_TjKEqlI
-    depends_on:
-      - rabbitmq
     networks:
       - dating_network
 

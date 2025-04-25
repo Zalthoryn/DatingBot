@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import os
+import json
+import time
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -8,10 +10,26 @@ from aiogram.fsm.state import State, StatesGroup
 import asyncpg
 import redis.asyncio as redis
 import pika
-import json
-from aiogram.types import InputFile
 import boto3
 from botocore.client import Config
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("telegram_bot.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Инициализация бота
+bot = Bot(token=os.getenv("BOT_TOKEN"))
+dp = Dispatcher()
+
+# Глобальная переменная для пула соединений
+db_pool = None
 
 # Инициализация MinIO клиента
 s3_client = boto3.client(
@@ -27,46 +45,6 @@ try:
     s3_client.create_bucket(Bucket='avatars')
 except s3_client.exceptions.BucketAlreadyOwnedByYou:
     pass
-
-# Команда /upload_photo
-@dp.message(Command("upload_photo"))
-async def cmd_upload_photo(message: types.Message):
-    await message.answer("Отправь мне фото для твоей анкеты!")
-
-@dp.message(content_types=types.ContentType.PHOTO)
-async def handle_photo(message: types.Message):
-    user_id = message.from_user.id
-    photo = message.photo[-1]  # Берем фото максимального качества
-    file_info = await bot.get_file(photo.file_id)
-    file = await bot.download_file(file_info.file_path)
-
-    # Загружаем в MinIO
-    file_name = f"{user_id}_{photo.file_id}.jpg"
-    s3_client.upload_fileobj(file, 'avatars', file_name)
-
-    # Обновляем photo_count
-    pool = dp.storage.get("db_pool")
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE users SET photo_count = photo_count + 1 WHERE telegram_id = $1",
-            user_id
-        )
-
-    await message.answer("Фото загружено в анкету!")
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("telegram_bot.log"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
-# Инициализация бота
-bot = Bot(token=os.getenv("BOT_TOKEN"))
-dp = Dispatcher()
 
 # Инициализация подключений
 async def init_db():
@@ -96,8 +74,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
     username = message.from_user.username
     logger.info(f"User {user_id} ({username}) started the bot")
 
-    pool = dp.storage.get("db_pool")
-    async with pool.acquire() as conn:
+    global db_pool
+    async with db_pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (telegram_id, username) VALUES ($1, $2) ON CONFLICT (telegram_id) DO NOTHING",
             user_id, username
@@ -140,8 +118,8 @@ async def process_city(message: types.Message, state: FSMContext):
     data = await state.get_data()
     user_id = message.from_user.id
 
-    pool = dp.storage.get("db_pool")
-    async with pool.acquire() as conn:
+    global db_pool
+    async with db_pool.acquire() as conn:
         await conn.execute(
             """
             UPDATE users
@@ -158,8 +136,8 @@ async def process_city(message: types.Message, state: FSMContext):
 @dp.message(Command("view"))
 async def cmd_view(message: types.Message):
     user_id = message.from_user.id
-    pool = dp.storage.get("db_pool")
-    async with pool.acquire() as conn:
+    global db_pool
+    async with db_pool.acquire() as conn:
         profile = await conn.fetchrow(
             "SELECT * FROM users WHERE telegram_id = $1", user_id
         )
@@ -182,8 +160,8 @@ async def cmd_find(message: types.Message):
     user_id = message.from_user.id
     logger.info(f"User {user_id} initiated a match search")
 
-    pool = dp.storage.get("db_pool")
-    async with pool.acquire() as conn:
+    global db_pool
+    async with db_pool.acquire() as conn:
         profile = await conn.fetchrow(
             "SELECT * FROM users WHERE telegram_id = $1", user_id
         )
@@ -211,10 +189,38 @@ async def cmd_find(message: types.Message):
     logger.info(f"Search task for user {user_id} sent to RabbitMQ")
     await message.answer("Ищу тебе пару... Ожидай уведомления!")
 
+# Команда /upload_photo
+@dp.message(Command("upload_photo"))
+async def cmd_upload_photo(message: types.Message):
+    await message.answer("Отправь мне фото для твоей анкеты!")
+
+# Обработчик для фото
+@dp.message(lambda message: message.content_type == types.ContentType.PHOTO)
+async def handle_photo(message: types.Message):
+    user_id = message.from_user.id
+    photo = message.photo[-1]  # Берем фото максимального качества
+    file_info = await bot.get_file(photo.file_id)
+    file = await bot.download_file(file_info.file_path)
+
+    # Загружаем в MinIO
+    file_name = f"{user_id}_{photo.file_id}.jpg"
+    s3_client.upload_fileobj(file, 'avatars', file_name)
+
+    # Обновляем photo_count
+    global db_pool
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET photo_count = photo_count + 1 WHERE telegram_id = $1",
+            user_id
+        )
+
+    await message.answer("Фото загружено в анкету!")
+
 # Запуск бота
 async def main():
-    pool = await init_db()
-    dp.storage["db_pool"] = pool
+    global db_pool
+    time.sleep(10)  # Ждем 10 секунд, чтобы дать другим сервисам запуститься
+    db_pool = await init_db()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
