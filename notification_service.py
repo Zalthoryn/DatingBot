@@ -1,13 +1,18 @@
 import pika
 import json
 import logging
-import os
 import asyncio
 import threading
+from config import TelegramSettings, MinIOSettings, RabbitMQSettings  # нужные переменные из config.py и .env
 from minio import Minio
 from minio.error import S3Error
 from aiogram.types import BufferedInputFile, InputMediaPhoto
 from aiogram import Bot
+
+# Создаём экземпляры настроек
+telegram_settings = TelegramSettings()
+minio_settings = MinIOSettings()
+rabbitmq_settings = RabbitMQSettings()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,14 +24,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-bot = Bot(token=os.getenv("BOT_TOKEN"))
-
+bot = Bot(token=telegram_settings.bot_token)
 minio_client = Minio(
     "minio:9000",
-    access_key=os.getenv("MINIO_ROOT_USER"),
-    secret_key=os.getenv("MINIO_ROOT_PASSWORD"),
+    access_key=minio_settings.minio_root_user,
+    secret_key=minio_settings.minio_root_password,
     secure=False
 )
+
 if not minio_client:
     logger.error("MinIO client initialization failed: MINIO_ROOT_USER or MINIO_ROOT_PASSWORD not set")
     raise ValueError("MinIO credentials not provided")
@@ -34,9 +39,9 @@ if not minio_client:
 bucket_name = "photos"
 
 def get_rabbitmq_connection():
-    credentials = pika.PlainCredentials('ivan', 'admin1234')
+    credentials = pika.PlainCredentials(rabbitmq_settings.rabbitmq_user, rabbitmq_settings.rabbitmq_password)
     return pika.BlockingConnection(pika.ConnectionParameters(
-        host="rabbitmq",
+        host=rabbitmq_settings.rabbitmq_host,
         credentials=credentials
     ))
 

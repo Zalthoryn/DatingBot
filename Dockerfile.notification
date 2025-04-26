@@ -3,4 +3,5 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY notification_service.py .
+COPY config.py . 
 CMD ["python", "notification_service.py"]

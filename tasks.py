@@ -1,9 +1,24 @@
-from celery import Celery
 import asyncio
 import asyncpg
 import logging
+from config import RedisSettings, PostgresSettings
+from celery import Celery
 
-app = Celery('tasks', broker='redis://redis:6379/0')
+# Создаём экземпляры настроек
+postgres_settings = PostgresSettings()
+redis_settings = RedisSettings()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("tasks.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+app = Celery('tasks', broker=redis_settings.redis_url)
 app.conf.update(
     task_serializer='json',
     accept_content=['json'],
@@ -13,15 +28,12 @@ app.conf.update(
 )
 app.config_from_object('celeryconfig')
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 async def init_db():
     return await asyncpg.create_pool(
-        user="dating_user",
-        password="dating_password",
-        database="dating_db",
-        host="postgres"
+        user=postgres_settings.postgres_user,
+        password=postgres_settings.postgres_password,
+        database=postgres_settings.postgres_db,
+        host=postgres_settings.postgres_host
     )
 
 @app.task

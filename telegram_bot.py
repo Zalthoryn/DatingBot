@@ -1,15 +1,20 @@
-import os
+import io
 import json
 import pika
 import logging
 import asyncpg
+from config import TelegramSettings, MinIOSettings, PostgresSettings, RabbitMQSettings # нужные переменные из config.py и .env
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, InputMediaPhoto
 from minio import Minio
 from minio.error import S3Error
-import aiohttp
-import io
+
+# Создаём экземпляры настроек
+telegram_settings = TelegramSettings()
+minio_settings = MinIOSettings()
+postgres_settings = PostgresSettings()
+rabbitmq_settings = RabbitMQSettings()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,21 +26,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-bot = Bot(token=os.getenv("BOT_TOKEN"))
+bot = Bot(token=telegram_settings.bot_token)
 dp = Dispatcher()
+
+pool = None
+user_state = {}
 
 # Инициализация MinIO клиента
 minio_client = Minio(
     "minio:9000",
-    access_key=os.getenv("MINIO_ROOT_USER"),
-    secret_key=os.getenv("MINIO_ROOT_PASSWORD"),
+    access_key=minio_settings.minio_root_user,
+    secret_key=minio_settings.minio_root_password,
     secure=False
 )
+
 if not minio_client:
     logger.error("MinIO client initialization failed: MINIO_ROOT_USER or MINIO_ROOT_PASSWORD not set")
     raise ValueError("MinIO credentials not provided")
 
-# Создаём корзину, если она не существует
 # Создаём корзину, если она не существует
 bucket_name = "photos"
 try:
@@ -47,21 +55,18 @@ except S3Error as e:
 
 async def init_db():
     return await asyncpg.create_pool(
-        user="dating_user",
-        password="dating_password",
-        database="dating_db",
-        host="postgres"
+        user=postgres_settings.postgres_user,
+        password=postgres_settings.postgres_password,
+        database=postgres_settings.postgres_db,
+        host=postgres_settings.postgres_host
     )
 
 def get_rabbitmq_connection():
-    credentials = pika.PlainCredentials('ivan', 'admin1234')
+    credentials = pika.PlainCredentials(rabbitmq_settings.rabbitmq_user, rabbitmq_settings.rabbitmq_password)
     return pika.BlockingConnection(pika.ConnectionParameters(
-        host="rabbitmq",
+        host=rabbitmq_settings.rabbitmq_host,
         credentials=credentials
     ))
-
-pool = None
-user_state = {}
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):

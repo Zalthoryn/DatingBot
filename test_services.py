@@ -1,13 +1,17 @@
 import pika
 import json
 import time
+from config import RabbitMQSettings
+
+# Создаём экземпляры настроек
+rabbitmq_settings = RabbitMQSettings()
 
 def get_rabbitmq_connection():
-    credentials = pika.PlainCredentials('ivan', 'admin1234')
+    credentials = pika.PlainCredentials(rabbitmq_settings.rabbitmq_user, rabbitmq_settings.rabbitmq_password)
     for attempt in range(5):
         try:
             return pika.BlockingConnection(pika.ConnectionParameters(
-                host='rabbitmq',
+                host=rabbitmq_settings.rabbitmq_host,
                 port=5672,
                 credentials=credentials
             ))

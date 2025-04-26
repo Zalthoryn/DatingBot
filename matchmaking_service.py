@@ -5,23 +5,13 @@ import asyncpg
 import logging
 import threading
 import redis.asyncio as redis
+from config import RedisSettings, PostgresSettings, RabbitMQSettings # нужные переменные из config.py и .env
 from celery import Celery
 
-async def init_db():
-    logger.info("Initializing database pool")
-    pool = await asyncpg.create_pool(
-        user="dating_user",
-        password="dating_password",
-        database="dating_db",
-        host="postgres"
-    )
-    logger.info("Database pool initialized successfully")
-    return pool
-
-
-app = Celery('tasks', broker='redis://redis:6379/0')
-
-redis_client = redis.Redis(host="redis", port=6379, decode_responses=True)
+# Создаём экземпляры настроек
+postgres_settings = PostgresSettings()
+rabbitmq_settings = RabbitMQSettings()
+redis_settings = RedisSettings()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,6 +22,29 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+app = Celery('tasks', broker=redis_settings.redis_url)
+
+redis_client = redis.Redis(host=redis_settings.redis_host, port=redis_settings.redis_port, decode_responses=True)
+
+async def init_db():
+    logger.info("Initializing database pool")
+    pool = await asyncpg.create_pool(
+        user=postgres_settings.postgres_user,
+        password=postgres_settings.postgres_password,
+        database=postgres_settings.postgres_db,
+        host=postgres_settings.postgres_host
+    )
+    logger.info("Database pool initialized successfully")
+    return pool
+
+
+def get_rabbitmq_connection():
+    credentials = pika.PlainCredentials(rabbitmq_settings.rabbitmq_user, rabbitmq_settings.rabbitmq_password)
+    return pika.BlockingConnection(pika.ConnectionParameters(
+        host=rabbitmq_settings.rabbitmq_host,
+        credentials=credentials
+    ))
 
 async def cache_profiles(pool):
     async with pool.acquire() as conn:
@@ -91,13 +104,6 @@ async def calculate_ratings(pool, user_id):
             """,
             primary, behavior, combined, profile['id']
         )
-
-def get_rabbitmq_connection():
-    credentials = pika.PlainCredentials('ivan', 'admin1234')
-    return pika.BlockingConnection(pika.ConnectionParameters(
-        host="rabbitmq",
-        credentials=credentials
-    ))
 
 def callback(ch, method, properties, body):
     data = json.loads(body)

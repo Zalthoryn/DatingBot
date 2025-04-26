@@ -2,9 +2,9 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_USER: dating_user
-      POSTGRES_PASSWORD: dating_password
-      POSTGRES_DB: dating_db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:
@@ -14,10 +14,10 @@ services:
     networks:
       - dating_network
     healthcheck: # Ожидаем готовности Postgres принимать сообщения
-      test: ["CMD", "pg_isready", "-U", "dating_user", "-d", "dating_db"]
-      interval: 2s
-      timeout: 2s
-      retries: 3
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}", "-d", "${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 4
 
   redis:
     image: redis:7
@@ -29,9 +29,9 @@ services:
       - dating_network
     healthcheck: # Ожидаем готовности Redis принимать сообщения
       test: ["CMD", "redis-cli", "ping"]
-      interval: 2s
-      timeout: 2s
-      retries: 3
+      interval: 3s
+      timeout: 3s
+      retries: 4
 
   # Брокер - RabbitMQ
   rabbitmq:
@@ -40,17 +40,17 @@ services:
       - "5672:5672"
       - "15672:15672"
     environment:
-      RABBITMQ_DEFAULT_USER: ivan
-      RABBITMQ_DEFAULT_PASS: admin1234
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     networks:
       - dating_network
     healthcheck: # Ожидаем готовности Rabbit принимать сообщения
       test: ["CMD", "rabbitmqctl", "status"]
-      interval: 3s
-      timeout: 2s
-      retries: 3
+      interval: 4s
+      timeout: 3s
+      retries: 4
 
   # Работаем с изображениями
   minio:
@@ -59,8 +59,8 @@ services:
       - "9000:9000"
       - "9001:9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-ivan}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-admin1234}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     volumes:
       - minio_data:/data
     command: server /data --console-address ":9001"
@@ -78,8 +78,15 @@ services:
       dockerfile: Dockerfile
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
-      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-ivan}
-      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-admin1234}
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
     depends_on:
       postgres:
         condition: service_healthy
@@ -97,6 +104,17 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.matchmaking
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      - REDIS_URL=${REDIS_URL}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -113,8 +131,11 @@ services:
       dockerfile: Dockerfile.notification
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
-      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-ivan}
-      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-admin1234}
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -129,6 +150,14 @@ services:
       context: .
       dockerfile: Dockerfile.celery
     command: celery -A tasks worker --loglevel=info
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      - REDIS_URL=${REDIS_URL}
     depends_on:
       - redis
       - postgres
@@ -140,6 +169,14 @@ services:
       context: .
       dockerfile: Dockerfile.celery
     command: celery -A tasks beat --loglevel=info
+    environment:
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      - REDIS_URL=${REDIS_URL}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
     depends_on:
       - redis
       - celery-worker
