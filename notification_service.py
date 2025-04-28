@@ -49,7 +49,7 @@ async def send_telegram_notification(user_info, object_keys=None):
     try:
         candidate_text = (
             f"У тебя новый мэтч!\n"
-            f"Анкета:\n"
+            f"Ник: {user_info['nickname']}\n"
             f"Возраст: {user_info['age']}\n"
             f"Пол: {user_info['gender']}\n"
             f"Интересы: {user_info['interests']}\n"

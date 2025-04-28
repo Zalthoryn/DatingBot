@@ -3,5 +3,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY telegram_bot.py .
+COPY keyboards.py .
 COPY config.py . 
 CMD ["python", "telegram_bot.py"]

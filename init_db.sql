@@ -21,6 +21,7 @@ CREATE INDEX idx_users_telegram_id ON Users(telegram_id);
 CREATE TABLE Profiles (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES Users(id) ON DELETE CASCADE,
+    nickname VARCHAR(255) NOT NULL,
     age INTEGER NOT NULL,
     gender TEXT NOT NULL CHECK (gender IN ('м', 'ж')),
     interests TEXT,

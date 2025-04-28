@@ -3,13 +3,13 @@ import json
 import pika
 import logging
 import asyncpg
-from config import TelegramSettings, MinIOSettings, PostgresSettings, RabbitMQSettings
+from config import TelegramSettings, MinIOSettings, PostgresSettings, RabbitMQSettings # нужные переменные из config.py и .env
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import BufferedInputFile, InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import BufferedInputFile, InputMediaPhoto
 from minio import Minio
 from minio.error import S3Error
-from keyboards import main_menu_keyboard, edit_profile_keyboard, remove_keyboard
+from keyboards import main_menu_keyboard, edit_profile_keyboard, remove_keyboard  # Импортируем клавиатуры
 
 # Создаём экземпляры настроек
 telegram_settings = TelegramSettings()
@@ -45,6 +45,7 @@ if not minio_client:
     logger.error("MinIO client initialization failed: MINIO_ROOT_USER or MINIO_ROOT_PASSWORD not set")
     raise ValueError("MinIO credentials not provided")
 
+# Создаём корзину, если она не существует
 bucket_name = "photos"
 try:
     if not minio_client.bucket_exists(bucket_name):
@@ -72,6 +73,7 @@ def get_rabbitmq_connection():
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     async with pool.acquire() as conn:
+        # Проверяем, есть ли пользователь
         user = await conn.fetchrow("SELECT * FROM Users WHERE telegram_id = $1", user_id)
         if not user:
             await conn.execute(
@@ -109,8 +111,8 @@ async def cmd_profile(message: types.Message):
 
         profile = await conn.fetchrow("SELECT * FROM Profiles WHERE user_id = $1", user['id'])
         if not profile:
-            await message.answer("Давай создадим профиль! Введи свой ник:", reply_markup=remove_keyboard)
-            user_state[user_id] = {"step": "nickname", "user_db_id": user['id'], "mode": "create"}
+            await message.answer("Давай создадим профиль! Введи свой возраст:", reply_markup=remove_keyboard)
+            user_state[user_id] = {"step": "age", "user_db_id": user['id']}
         else:
             await message.answer("Твой профиль уже существует. Что хочешь сделать?", reply_markup=edit_profile_keyboard)
             user_state[user_id] = {"step": "profile_menu", "user_db_id": user['id']}
@@ -119,205 +121,23 @@ async def cmd_profile(message: types.Message):
 async def process_profile_menu(message: types.Message):
     user_id = message.from_user.id
     choice = message.text.lower()
-    if choice == "отредактировать ✏️":
-        async with pool.acquire() as conn:
-            profile = await conn.fetchrow("SELECT * FROM Profiles WHERE user_id = $1", user_state[user_id]["user_db_id"])
-            user_state[user_id] = {
-                "step": "nickname",
-                "user_db_id": user_state[user_id]["user_db_id"],
-                "mode": "edit",
-                "current_nickname": profile['nickname'],
-                "current_age": profile['age'],
-                "current_gender": profile['gender'],
-                "current_interests": profile['interests'],
-                "current_city": profile['city']
-            }
-            skip_button = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Оставить текущее значение ⏭️", callback_data="skip_nickname")]
-            ])
-            await message.answer(
-                f"Текущий ник: {profile['nickname']}\nВведи новый ник:",
-                reply_markup=skip_button
-            )
+    if choice == "редактировать ✏️":
+        await message.answer("Давай обновим твой профиль! Введи свой возраст:", reply_markup=remove_keyboard)
+        user_state[user_id] = {"step": "age", "user_db_id": user_state[user_id]["user_db_id"]}
     elif choice == "назад ⬅️":
         await message.answer("Возвращаемся в главное меню.", reply_markup=main_menu_keyboard)
         del user_state[user_id]
     else:
-        await message.answer("Пожалуйста, выбери 'Отредактировать ✏️' или 'Назад ⬅️'.")
-
-@dp.message(lambda message: user_state.get(message.from_user.id, {}).get("step") == "nickname")
-async def process_nickname(message: types.Message):
-    user_id = message.from_user.id
-    # Дополнительная проверка: если шаг изменился, игнорируем текстовый ввод
-    if user_state.get(user_id, {}).get("step") != "nickname":
-        return
-
-    nickname = message.text.strip()
-    if not nickname:
-        await message.answer("Ник не может быть пустым! Введи свой ник:")
-        return
-
-    user_state[user_id]["nickname"] = nickname
-    mode = user_state[user_id]["mode"]
-    if mode == "edit":
-        skip_button = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Оставить текущее значение ⏭️", callback_data="skip_age")]
-        ])
-        await message.answer(
-            f"Текущий возраст: {user_state[user_id]['current_age']}\nВведи новый возраст:",
-            reply_markup=skip_button
-        )
-    else:
-        await message.answer("Теперь введи свой возраст:", reply_markup=remove_keyboard)
-    user_state[user_id]["step"] = "age"
-
-@dp.callback_query(lambda c: c.data.startswith("skip_"))
-async def process_skip_callback(callback_query: types.CallbackQuery):
-    user_id = callback_query.from_user.id
-    logger.info(f"process_skip_callback: user_id={user_id}, user_state={user_state.get(user_id, 'Not found')}")
-    
-    if user_id not in user_state:
-        await callback_query.answer("Сессия истекла. Начни заново.")
-        return
-
-    step = callback_query.data.split("_")[1]
-    if step == "nickname":
-        user_state[user_id]["nickname"] = user_state[user_id]["current_nickname"]
-        skip_button = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Оставить текущее значение ⏭️", callback_data="skip_age")]
-        ])
-        await callback_query.message.answer(
-            f"Текущий возраст: {user_state[user_id]['current_age']}\nВведи новый возраст:",
-            reply_markup=skip_button
-        )
-        user_state[user_id]["step"] = "age"  # Обновляем шаг
-    elif step == "age":
-        user_state[user_id]["age"] = user_state[user_id]["current_age"]
-        skip_button = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Оставить текущее значение ⏭️", callback_data="skip_gender")]
-        ])
-        await callback_query.message.answer(
-            f"Текущий пол: {user_state[user_id]['current_gender']}\nУкажи новый пол (м/ж):",
-            reply_markup=skip_button
-        )
-        user_state[user_id]["step"] = "gender"  # Обновляем шаг
-    elif step == "gender":
-        user_state[user_id]["gender"] = user_state[user_id]["current_gender"]
-        skip_button = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Оставить текущее значение ⏭️", callback_data="skip_interests")]
-        ])
-        await callback_query.message.answer(
-            f"Текущие интересы: {user_state[user_id]['current_interests']}\nУкажи новые интересы (через запятую):",
-            reply_markup=skip_button
-        )
-        user_state[user_id]["step"] = "interests"  # Обновляем шаг
-    elif step == "interests":
-        user_state[user_id]["interests"] = user_state[user_id]["current_interests"]
-        skip_button = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Оставить текущее значение ⏭️", callback_data="skip_city")]
-        ])
-        await callback_query.message.answer(
-            f"Текущий город: {user_state[user_id]['current_city']}\nУкажи новый город:",
-            reply_markup=skip_button
-        )
-        user_state[user_id]["step"] = "city"  # Обновляем шаг
-    elif step == "city":
-        user_state[user_id]["city"] = user_state[user_id]["current_city"]
-        logger.info(f"Before process_city_after_skip: user_id={user_id}, user_state={user_state[user_id]}")
-        user_state[user_id]["step"] = "manage_photos"  # Обновляем шаг
-        await process_city_after_skip(callback_query.message, user_id)
-    elif step == "photos":
-        user_state[user_id]["step"] = "manage_photos"  # Обновляем шаг
-        await manage_photos(callback_query.message, user_id)
-
-    await callback_query.answer()
-
-async def process_city_after_skip(message: types.Message, user_id: int):  # Добавляем параметр user_id
-    logger.info(f"process_city_after_skip: user_id={user_id}, user_state={user_state.get(user_id, 'Not found')}")
-    
-    # Проверяем, есть ли user_db_id в user_state
-    if user_id not in user_state or "user_db_id" not in user_state[user_id]:
-        # Если нет, запрашиваем user_db_id из базы данных
-        async with pool.acquire() as connection:
-            user_db_id = await connection.fetchval(
-                "SELECT id FROM Users WHERE telegram_id = $1", user_id
-            )
-            if user_db_id is None:
-                logger.error(f"User not found in database: telegram_id={user_id}")
-                await message.answer("Ошибка: Пользователь не найден в базе данных. Пожалуйста, начни регистрацию заново.")
-                return
-            # Сохраняем user_db_id в user_state
-            if user_id not in user_state:
-                user_state[user_id] = {}
-            user_state[user_id]["user_db_id"] = user_db_id
-            logger.info(f"Restored user_db_id={user_db_id} for user_id={user_id}")
-    else:
-        user_db_id = user_state[user_id]["user_db_id"]
-
-    mode = user_state[user_id]["mode"]
-    city = user_state[user_id].get("city", user_state[user_id]["current_city"])
-    async with pool.acquire() as conn:
-        profile = await conn.fetchrow("SELECT * FROM Profiles WHERE user_id = $1", user_db_id)
-        if profile:
-            await conn.execute(
-                """
-                UPDATE Profiles
-                SET nickname = $1, age = $2, gender = $3, interests = $4, city = $5
-                WHERE user_id = $6
-                """,
-                user_state[user_id]["nickname"], user_state[user_id]["age"], user_state[user_id]["gender"],
-                user_state[user_id]["interests"], city, user_db_id
-            )
-            await message.answer("Профиль обновлён! Теперь давай управим твоими фото:", reply_markup=remove_keyboard)
-        else:
-            await conn.execute(
-                """
-                INSERT INTO Profiles (user_id, nickname, age, gender, interests, city, profile_completeness)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                """,
-                user_db_id, user_state[user_id]["nickname"], user_state[user_id]["age"], user_state[user_id]["gender"],
-                user_state[user_id]["interests"], city, 80
-            )
-            profile = await conn.fetchrow("SELECT * FROM Profiles WHERE user_id = $1", user_db_id)
-            await conn.execute(
-                "INSERT INTO Ratings (profile_id) VALUES ($1)", profile['id']
-            )
-            await message.answer("Профиль создан! Теперь давай добавим фото:", reply_markup=remove_keyboard)
-
-        connection = get_rabbitmq_connection()
-        channel = connection.channel()
-        channel.queue_declare(queue="matchmaking")
-        channel.basic_publish(
-            exchange="",
-            routing_key="matchmaking",
-            body=json.dumps({"user_id": user_id})
-        )
-        connection.close()
-        logger.info(f"Sent matchmaking message for user {user_id}")
-
-        user_state[user_id]["step"] = "manage_photos"
-        await manage_photos(message, user_id)
+        await message.answer("Пожалуйста, выбери 'Редактировать ✏️' или 'Назад ⬅️'.")
 
 @dp.message(lambda message: user_state.get(message.from_user.id, {}).get("step") == "age")
 async def process_age(message: types.Message):
     user_id = message.from_user.id
-    if user_state.get(user_id, {}).get("step") != "age":
-        return
-
-    mode = user_state[user_id]["mode"]
+    user_db_id = user_state[user_id]["user_db_id"]
     try:
         age = int(message.text)
         user_state[user_id]["age"] = age
-        if mode == "edit":
-            skip_button = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Оставить текущее значение ⏭️", callback_data="skip_gender")]
-            ])
-            await message.answer(
-                f"Текущий пол: {user_state[user_id]['current_gender']}\nУкажи новый пол (м/ж):",
-                reply_markup=skip_button
-            )
-        else:
-            await message.answer("Теперь укажи свой пол (м/ж):", reply_markup=remove_keyboard)
+        await message.answer("Теперь укажи свой пол (м/ж):")
         user_state[user_id]["step"] = "gender"
     except ValueError:
         await message.answer("Пожалуйста, введи число для возраста!")
@@ -325,23 +145,10 @@ async def process_age(message: types.Message):
 @dp.message(lambda message: user_state.get(message.from_user.id, {}).get("step") == "gender")
 async def process_gender(message: types.Message):
     user_id = message.from_user.id
-    if user_state.get(user_id, {}).get("step") != "gender":
-        return
-
-    mode = user_state[user_id]["mode"]
     gender = message.text.lower()
     if gender in ["м", "ж"]:
         user_state[user_id]["gender"] = gender
-        if mode == "edit":
-            skip_button = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Оставить текущее значение ⏭️", callback_data="skip_interests")]
-            ])
-            await message.answer(
-                f"Текущие интересы: {user_state[user_id]['current_interests']}\nУкажи новые интересы (через запятую):",
-                reply_markup=skip_button
-            )
-        else:
-            await message.answer("Укажи свои интересы (через запятую):", reply_markup=remove_keyboard)
+        await message.answer("Укажи свои интересы (через запятую):")
         user_state[user_id]["step"] = "interests"
     else:
         await message.answer("Пожалуйста, укажи пол как 'м' или 'ж'!")
@@ -349,63 +156,47 @@ async def process_gender(message: types.Message):
 @dp.message(lambda message: user_state.get(message.from_user.id, {}).get("step") == "interests")
 async def process_interests(message: types.Message):
     user_id = message.from_user.id
-    if user_state.get(user_id, {}).get("step") != "interests":
-        return
-
-    mode = user_state[user_id]["mode"]
     interests = message.text
     user_state[user_id]["interests"] = interests
-    if mode == "edit":
-        skip_button = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Оставить текущее значение ⏭️", callback_data="skip_city")]
-        ])
-        await message.answer(
-            f"Текущий город: {user_state[user_id]['current_city']}\nУкажи новый город:",
-            reply_markup=skip_button
-        )
-    else:
-        await message.answer("Укажи свой город:", reply_markup=remove_keyboard)
+    await message.answer("Укажи свой город:")
     user_state[user_id]["step"] = "city"
 
 @dp.message(lambda message: user_state.get(message.from_user.id, {}).get("step") == "city")
 async def process_city(message: types.Message):
     user_id = message.from_user.id
-    if user_state.get(user_id, {}).get("step") != "city":
-        return
-
     user_db_id = user_state[user_id]["user_db_id"]
-    mode = user_state[user_id]["mode"]
     city = message.text
-    user_state[user_id]["city"] = city
-
     async with pool.acquire() as conn:
+        # Создаём профиль
         profile = await conn.fetchrow("SELECT * FROM Profiles WHERE user_id = $1", user_db_id)
         if profile:
             await conn.execute(
                 """
                 UPDATE Profiles
-                SET nickname = $1, age = $2, gender = $3, interests = $4, city = $5
-                WHERE user_id = $6
+                SET age = $1, gender = $2, interests = $3, city = $4
+                WHERE user_id = $5
                 """,
-                user_state[user_id]["nickname"], user_state[user_id]["age"], user_state[user_id]["gender"],
+                user_state[user_id]["age"], user_state[user_id]["gender"],
                 user_state[user_id]["interests"], city, user_db_id
             )
-            await message.answer("Профиль обновлён! Теперь давай управим твоими фото:", reply_markup=remove_keyboard)
+            await message.answer("Профиль обновлён! Используй /addphoto для фото или /find для поиска.", reply_markup=main_menu_keyboard)
         else:
             await conn.execute(
                 """
-                INSERT INTO Profiles (user_id, nickname, age, gender, interests, city, profile_completeness)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                INSERT INTO Profiles (user_id, age, gender, interests, city, profile_completeness)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 """,
-                user_db_id, user_state[user_id]["nickname"], user_state[user_id]["age"], user_state[user_id]["gender"],
+                user_db_id, user_state[user_id]["age"], user_state[user_id]["gender"],
                 user_state[user_id]["interests"], city, 80
             )
+        # Создаём запись в Ratings
             profile = await conn.fetchrow("SELECT * FROM Profiles WHERE user_id = $1", user_db_id)
             await conn.execute(
                 "INSERT INTO Ratings (profile_id) VALUES ($1)", profile['id']
             )
-            await message.answer("Профиль создан! Теперь давай добавим фото:", reply_markup=remove_keyboard)
+            await message.answer("Профиль создан! Используй /addphoto для фото или /find для поиска.", reply_markup=main_menu_keyboard)
 
+    # Отправляем сообщение в очередь matchmaking
         connection = get_rabbitmq_connection()
         channel = connection.channel()
         channel.queue_declare(queue="matchmaking")
@@ -417,98 +208,18 @@ async def process_city(message: types.Message):
         connection.close()
         logger.info(f"Sent matchmaking message for user {user_id}")
 
-        user_state[user_id]["step"] = "manage_photos"
-        await manage_photos(message, user_id)
+    del user_state[user_id]
 
-async def manage_photos(message: types.Message, user_id: int):
-    if user_id not in user_state or "user_db_id" not in user_state[user_id]:
-        # Если нет, запрашиваем user_db_id из базы данных
-        async with pool.acquire() as connection:
-            user_db_id = await connection.fetchval(
-                "SELECT id FROM Users WHERE telegram_id = $1", user_id
-            )
-            if user_db_id is None:
-                logger.error(f"User not found in database: telegram_id={user_id}")
-                await message.answer("Ошибка: Пользователь не найден в базе данных. Пожалуйста, начни регистрацию заново.")
-                return
-            # Сохраняем user_db_id в user_state
-            if user_id not in user_state:
-                user_state[user_id] = {}
-            user_state[user_id]["user_db_id"] = user_db_id
-            logger.info(f"Restored user_db_id={user_db_id} for user_id={user_id}")
-    else:
-        user_db_id = user_state[user_id]["user_db_id"]
-
+@dp.message(Command("addphoto"))
+async def cmd_add_photo(message: types.Message):
+    user_id = message.from_user.id
     async with pool.acquire() as conn:
-        photos = await conn.fetch(
-            "SELECT id, object_key FROM Photos WHERE user_id = $1 ORDER BY uploaded_at DESC LIMIT 3",
-            user_db_id
-        )
-
-    if photos:
-        media = []
-        for photo in photos:
-            try:
-                response = minio_client.get_object(bucket_name, photo['object_key'])
-                photo_data = response.read()
-                response.close()
-                response.release_conn()
-                photo_file = BufferedInputFile(
-                    file=photo_data,
-                    filename="profile_photo.jpg"
-                )
-                media.append(InputMediaPhoto(media=photo_file))
-            except S3Error as e:
-                logger.error(f"Error retrieving photo from MinIO: {str(e)}")
-
-        if media:
-            await message.answer_media_group(media=media)
-
-        photo_buttons = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"Удалить фото #{i+1} 🗑️", callback_data=f"delete_photo_{photo['id']}")]
-            for i, photo in enumerate(photos)
-        ])
-        photo_buttons.inline_keyboard.append([InlineKeyboardButton(text="Добавить новое фото 📸", callback_data="add_photo")])
-        photo_buttons.inline_keyboard.append([InlineKeyboardButton(text="Завершить редактирование ✅", callback_data="finish_editing")])
-        await message.answer("Вот твои текущие фото. Что хочешь сделать?", reply_markup=photo_buttons)
-    else:
-        photo_buttons = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Добавить новое фото 📸", callback_data="add_photo")],
-            [InlineKeyboardButton(text="Завершить редактирование ✅", callback_data="finish_editing")]
-        ])
-        await message.answer("У тебя пока нет фото. Хочешь добавить?", reply_markup=photo_buttons)
-
-@dp.callback_query(lambda c: c.data.startswith("delete_photo_"))
-async def delete_photo(callback_query: types.CallbackQuery):
-    user_id = callback_query.from_user.id
-    if user_id not in user_state:
-        await callback_query.answer("Сессия истекла. Начни заново.")
-        return
-
-    photo_id = int(callback_query.data.split("_")[2])
-    async with pool.acquire() as conn:
-        photo = await conn.fetchrow("SELECT object_key FROM Photos WHERE id = $1", photo_id)
-        if photo:
-            try:
-                minio_client.remove_object(bucket_name, photo['object_key'])
-                await conn.execute("DELETE FROM Photos WHERE id = $1", photo_id)
-                await callback_query.answer("Фото удалено!")
-            except S3Error as e:
-                logger.error(f"Error deleting photo from MinIO: {str(e)}")
-                await callback_query.answer("Ошибка при удалении фото.")
-
-    await manage_photos(callback_query.message, user_id)
-
-@dp.callback_query(lambda c: c.data == "add_photo")
-async def add_photo(callback_query: types.CallbackQuery):
-    user_id = callback_query.from_user.id
-    if user_id not in user_state:
-        await callback_query.answer("Сессия истекла. Начни заново.")
-        return
-
-    user_state[user_id]["step"] = "add_photo"
-    await callback_query.message.answer("Пожалуйста, отправь новое фото:")
-    await callback_query.answer()
+        user = await conn.fetchrow("SELECT * FROM Users WHERE telegram_id = $1", user_id)
+        if not user:
+            await message.answer("Сначала создай профиль с помощью /profile!")
+            return
+    await message.answer("Пожалуйста, отправь фото для твоего профиля:")
+    user_state[user_id] = {"step": "add_photo", "user_db_id": user['id']}
 
 @dp.callback_query(lambda c: c.data == "finish_editing")
 async def finish_editing(callback_query: types.CallbackQuery):
@@ -547,7 +258,7 @@ async def process_photo(message: types.Message):
             logger.error(f"Error uploading photo to MinIO: {str(e)}")
             await message.answer("Ошибка при загрузке фото. Попробуй снова!")
             user_state[user_id]["step"] = "manage_photos"
-            await manage_photos(message, user_id)
+            await manage_photos(message)
             return
 
         async with pool.acquire() as conn:
@@ -566,12 +277,9 @@ async def process_photo(message: types.Message):
         await message.answer("Фото добавлено!")
     else:
         await message.answer("Пожалуйста, отправь фото!")
-        user_state[user_id]["step"] = "manage_photos"
-        await manage_photos(message, user_id)
-        return
 
     user_state[user_id]["step"] = "manage_photos"
-    await manage_photos(message, user_id)
+    await manage_photos(message)
 
 @dp.message(Command("view"))
 async def cmd_view(message: types.Message):
@@ -579,7 +287,7 @@ async def cmd_view(message: types.Message):
     async with pool.acquire() as conn:
         user = await conn.fetchrow("SELECT * FROM Users WHERE telegram_id = $1", user_id)
         if not user:
-            await message.answer("У тебя нет профиля! Создай его с помощью /profile.", reply_markup=main_menu_keyboard)
+            await message.answer("У тебя нет профиля! Создай его с помощью /profile.")
             return
         profile = await conn.fetchrow("SELECT * FROM Profiles WHERE user_id = $1", user['id'])
         if profile:
@@ -592,6 +300,7 @@ async def cmd_view(message: types.Message):
                 f"Заполненность профиля: {profile['profile_completeness']}%"
             )
 
+            # Получаем до трёх последних фотографий
             photos = await conn.fetch(
                 "SELECT object_key FROM Photos WHERE user_id = $1 ORDER BY uploaded_at DESC LIMIT 3",
                 user['id']
@@ -599,6 +308,7 @@ async def cmd_view(message: types.Message):
 
             if photos:
                 try:
+                    # Создаём список медиа для отправки
                     media = []
                     for photo in photos:
                         response = minio_client.get_object(bucket_name, photo['object_key'])
@@ -633,6 +343,7 @@ async def cmd_find(message: types.Message):
             await message.answer("Пожалуйста, заполни профиль полностью с помощью /profile и добавь фото!", reply_markup=main_menu_keyboard)
             return
 
+        # Ищем кандидата
         candidate = await conn.fetchrow(
             """
             SELECT u.telegram_id, p.id as profile_id, p.nickname, p.age, p.gender, p.interests, p.city
@@ -648,42 +359,18 @@ async def cmd_find(message: types.Message):
             )
             AND NOT EXISTS (
                 SELECT 1 FROM Interactions i
-                WHERE i.from_profile_id = $4 AND i.to_profile_id = p.id
+                WHERE i.from_profile_id = $4 AND i.to_profile_id = p.id AND i.action = 'skip'
             )
             LIMIT 1
-            """, #  AND i.action = 'skip'
+            """,
             user['id'], profile['gender'], profile['city'], profile['id']
         )
 
-        # Если анкета из того же города не найдена, ищем анкеты из других городов
-        if not candidate:
-            candidate = await conn.fetchrow(
-                """
-                SELECT u.telegram_id, p.id as profile_id, p.nickname, p.age, p.gender, p.interests, p.city
-                FROM Profiles p
-                JOIN Users u ON p.user_id = u.id
-                WHERE u.id != $1
-                AND p.gender != $2
-                AND p.city != $3
-                AND NOT EXISTS (
-                    SELECT 1 FROM Matches m
-                    WHERE (m.profile1_id = $4 AND m.profile2_id = p.id)
-                    OR (m.profile1_id = p.id AND m.profile2_id = $4)
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM Interactions i
-                    WHERE i.from_profile_id = $4 AND i.to_profile_id = p.id
-                )
-                LIMIT 1
-                """,
-                user['id'], profile['gender'], profile['city'], profile['id']
-            )
-
-        # Если кандидат не найден ни в одном из запросов
         if not candidate:
             await message.answer("Подходящих кандидатов не найдено. Попробуй позже!", reply_markup=main_menu_keyboard)
             return
 
+        # Получаем 1-3 фото кандидата
         photos = await conn.fetch(
             "SELECT object_key FROM Photos WHERE user_id = (SELECT id FROM Users WHERE telegram_id = $1) ORDER BY uploaded_at DESC LIMIT 3",
             candidate['telegram_id']
@@ -700,6 +387,7 @@ async def cmd_find(message: types.Message):
 
         if photos:
             try:
+                # Создаём список медиа для отправки
                 media = []
                 for photo in photos:
                     response = minio_client.get_object(bucket_name, photo['object_key'])
@@ -725,6 +413,7 @@ async def cmd_find(message: types.Message):
             "from_profile_id": profile['id']
         }
 
+@dp.message(lambda message: user_state.get(message.from_user.id, {}).get("step") == "match_response")
 async def process_match_response(message: types.Message):
     user_id = message.from_user.id
     response = message.text.lower()
@@ -732,19 +421,7 @@ async def process_match_response(message: types.Message):
     from_profile_id = user_state[user_id]["from_profile_id"]
 
     async with pool.acquire() as conn:
-        # Проверка на существование взаимодействия
-        existing_interaction = await conn.fetchrow(
-            """
-            SELECT 1 FROM Interactions
-            WHERE from_profile_id = $1 AND to_profile_id = $2
-            """,
-            from_profile_id, candidate_profile_id
-        )
-        if existing_interaction:
-            await message.answer("Ты уже взаимодействовал с этим пользователем!", reply_markup=main_menu_keyboard)
-            del user_state[user_id]
-            return
-
+        # Сохраняем взаимодействие
         action = "like" if response == "да" else "skip"
         await conn.execute(
             """
@@ -763,6 +440,7 @@ async def process_match_response(message: types.Message):
                 candidate_profile_id, from_profile_id
             )
             if mutual_like:
+                # Создаём мэтч
                 await conn.execute(
                     "INSERT INTO Matches (profile1_id, profile2_id) VALUES ($1, $2)",
                     from_profile_id, candidate_profile_id
@@ -797,6 +475,7 @@ async def process_match_response(message: types.Message):
                     del user_state[user_id]
                     return
 
+                # Получаем до трёх последних фотографий для каждого пользователя
                 user1_photos = await conn.fetch(
                     "SELECT object_key FROM Photos WHERE user_id = (SELECT id FROM Users WHERE telegram_id = $1) ORDER BY uploaded_at DESC LIMIT 3",
                     user1['telegram_id']
@@ -809,6 +488,7 @@ async def process_match_response(message: types.Message):
                 user1_object_keys = [photo['object_key'] for photo in user1_photos] if user1_photos else []
                 user2_object_keys = [photo['object_key'] for photo in user2_photos] if user2_photos else []
 
+                # Первому пользователю отправляем анкету второго
                 channel.basic_publish(
                     exchange="",
                     routing_key="notifications",
